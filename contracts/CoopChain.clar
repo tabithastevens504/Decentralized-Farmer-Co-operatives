@@ -8,6 +8,9 @@
 (define-constant ERR-VOTING-ENDED (err u106))
 (define-constant ERR-INVALID-AMOUNT (err u107))
 (define-constant ERR-WITHDRAWAL-FAILED (err u108))
+(define-constant ERR-CANNOT-DELEGATE-TO-SELF (err u109))
+(define-constant ERR-INVALID-DELEGATE (err u110))
+(define-constant ERR-CIRCULAR-DELEGATION (err u111))
 
 (define-data-var next-proposal-id uint u1)
 (define-data-var total-members uint u0)
@@ -37,6 +40,8 @@
   })
 
 (define-map votes {proposal-id: uint, voter: principal} bool)
+
+(define-map delegations principal principal)
 
 (define-map profit-shares principal uint)
 
@@ -91,17 +96,18 @@
 
 (define-public (vote-on-proposal (proposal-id uint) (vote-yes bool))
   (let ((proposal (unwrap! (map-get? proposals proposal-id) ERR-PROPOSAL-NOT-FOUND))
-        (member-data (unwrap! (map-get? members tx-sender) ERR-NOT-MEMBER)))
+        (member-data (unwrap! (map-get? members tx-sender) ERR-NOT-MEMBER))
+        (voting-power (get-total-voting-power tx-sender)))
     (asserts! (get active member-data) ERR-NOT-AUTHORIZED)
     (asserts! (<= stacks-block-height (get voting-end proposal)) ERR-VOTING-ENDED)
     (asserts! (is-none (map-get? votes {proposal-id: proposal-id, voter: tx-sender})) ERR-ALREADY-VOTED)
     (map-set votes {proposal-id: proposal-id, voter: tx-sender} vote-yes)
     (if vote-yes
       (map-set proposals proposal-id (merge proposal {
-        yes-votes: (+ (get yes-votes proposal) (get shares member-data))
+        yes-votes: (+ (get yes-votes proposal) voting-power)
       }))
       (map-set proposals proposal-id (merge proposal {
-        no-votes: (+ (get no-votes proposal) (get shares member-data))
+        no-votes: (+ (get no-votes proposal) voting-power)
       })))
     (ok true)))
 
@@ -206,3 +212,31 @@
              (if (> (get yes-votes prop) (get no-votes prop)) "passed" "rejected")
              "active")
       "not-found")))
+
+(define-public (delegate-voting-power (delegate principal))
+  (let ((member-data (unwrap! (map-get? members tx-sender) ERR-NOT-MEMBER))
+        (delegate-data (unwrap! (map-get? members delegate) ERR-INVALID-DELEGATE)))
+    (asserts! (get active member-data) ERR-NOT-AUTHORIZED)
+    (asserts! (get active delegate-data) ERR-INVALID-DELEGATE)
+    (asserts! (not (is-eq tx-sender delegate)) ERR-CANNOT-DELEGATE-TO-SELF)
+    (asserts! (is-none (map-get? delegations delegate)) ERR-CIRCULAR-DELEGATION)
+    (map-set delegations tx-sender delegate)
+    (ok true)))
+
+(define-public (revoke-delegation)
+  (let ((member-data (unwrap! (map-get? members tx-sender) ERR-NOT-MEMBER)))
+    (asserts! (get active member-data) ERR-NOT-AUTHORIZED)
+    (asserts! (is-some (map-get? delegations tx-sender)) ERR-NOT-AUTHORIZED)
+    (map-delete delegations tx-sender)
+    (ok true)))
+
+(define-read-only (get-delegate (member principal))
+  (map-get? delegations member))
+
+(define-read-only (get-total-voting-power (member principal))
+  (let ((member-data (map-get? members member)))
+    (match member-data
+      data (if (get active data)
+             (get shares data)
+             u0)
+      u0)))
